@@ -18,17 +18,6 @@ fn contained_in(subset: &str, main: &str) -> bool {
             .unwrap_or(true)
 }
 
-/// This function is not strictly needed but it should improve the performance
-/// in the case of a user including one field twice.
-fn simplify_selectors(mut selectors: Vec<String>) -> Vec<String> {
-    // order the field like that; [person, person.age, person.name]
-    selectors.sort();
-    // remove the selectors included in the previous selector; [person]
-    // be cautious, dedup_by give you the elements in the wrong order.
-    selectors.dedup_by(|sub, main| contained_in(sub, main));
-    selectors
-}
-
 /// Permissively selects values in a json with a list of selectors.
 /// Returns a new json containing all the selected fields.
 /// ```
@@ -58,7 +47,6 @@ fn simplify_selectors(mut selectors: Vec<String>) -> Vec<String> {
 /// );
 /// ```
 pub fn select_values(value: &Map<String, Value>, selectors: Vec<String>) -> Map<String, Value> {
-    let selectors = simplify_selectors(selectors);
     let selectors = selectors.iter().map(|s| s.as_ref()).collect();
     create_value(value, selectors)
 }
@@ -181,38 +169,6 @@ mod tests {
         assert!(!contained_in("animaux.chien", "animaux.ch"));
         assert!(!contained_in("animaux.chien", "animaux.chi"));
         assert!(!contained_in("animaux.chien", "animaux.chie"));
-    }
-
-    #[test]
-    fn test_simplify_selectors() {
-        assert_eq!(
-            simplify_selectors(vec![S("person.name"), S("person.dog")]),
-            vec![S("person.dog"), S("person.name"),],
-        );
-        assert_eq!(
-            simplify_selectors(vec![S("person"), S("person.name"), S("person.dog")]),
-            vec![S("person")],
-        );
-        assert_eq!(
-            simplify_selectors(vec![S("person.name"), S("person"), S("person.dog")]),
-            vec![S("person")],
-        );
-        assert_eq!(
-            simplify_selectors(vec![S("person.name"), S("person.dog"), S("person")]),
-            vec![S("person")],
-        );
-        assert_eq!(
-            simplify_selectors(vec![S("family.brother.dog"), S("family.brother")]),
-            vec![S("family.brother")],
-        );
-        assert_eq!(
-            simplify_selectors(vec![
-                S("family.brother.dog"),
-                S("family.brother"),
-                S("family.brother.cat")
-            ]),
-            vec![S("family.brother")],
-        );
     }
 
     #[test]
@@ -620,6 +576,39 @@ mod tests {
                "pet": {
                  "dog": {
                    "name": "milan"
+                 }
+               }
+            })
+        );
+
+        let value: Value = json!({
+           "pet.dog.name": "jean",
+           "pet.dog": {
+             "name": "bob",
+           },
+           "pet": {
+             "dog.name": "michel",
+             "dog": {
+               "name": "milan",
+             }
+           }
+        });
+        let value: &Document = value.as_object().unwrap();
+
+        let res: Value =
+            select_values(value, vec![S("pet.dog.name"), S("pet.dog"), S("pet")]).into();
+
+        assert_eq!(
+            res,
+            json!({
+               "pet.dog.name": "jean",
+               "pet.dog": {
+                 "name": "bob",
+               },
+               "pet": {
+                 "dog.name": "michel",
+                 "dog": {
+                   "name": "milan",
                  }
                }
             })
