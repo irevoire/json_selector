@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::collections::HashSet;
 
 use serde_json::*;
@@ -6,12 +8,13 @@ type Document = Map<String, Value>;
 
 const SPLIT_SYMBOL: char = '.';
 
-fn contained_in(main: &str, sub: &str) -> bool {
-    main.starts_with(sub)
-        && main[sub.len()..]
+/// Returns `true` if the `subset` is contained in the `main` string.
+fn contained_in(subset: &str, main: &str) -> bool {
+    subset.starts_with(main)
+        && subset[main.len()..]
             .chars()
             .next()
-            .map(|c| c == '.')
+            .map(|c| c == SPLIT_SYMBOL)
             .unwrap_or(true)
 }
 
@@ -21,11 +24,40 @@ fn simplify_selectors(mut selectors: Vec<String>) -> Vec<String> {
     // order the field like that; [person, person.age, person.name]
     selectors.sort();
     // remove the selectors included in the previous selector; [person]
+    // be cautious, dedup_by give you the elements in the wrong order.
     selectors.dedup_by(|sub, main| contained_in(sub, main));
     selectors
 }
 
-pub fn select_values(value: &Document, selectors: Vec<String>) -> Document {
+/// Permissively selects values in a json with a list of selectors.
+/// Returns a new json containing all the selected fields.
+/// ```
+/// use serde_json::*;
+/// use permissive_json_pointer::select_values;
+///
+/// let value: Value = json!({
+///     "name": "peanut",
+///     "age": 8,
+///     "race": {
+///         "name": "bernese mountain",
+///         "avg_age": 12,
+///         "size": "80cm",
+///     },
+/// });
+/// let value: &Map<String, Value> = value.as_object().unwrap();
+///
+/// let res: Value = select_values(value, vec!["name".to_string(), "race.name".to_string()]).into();
+/// assert_eq!(
+///     res,
+///     json!({
+///         "name": "peanut",
+///         "race": {
+///             "name": "bernese mountain",
+///         },
+///     })
+/// );
+/// ```
+pub fn select_values(value: &Map<String, Value>, selectors: Vec<String>) -> Map<String, Value> {
     let selectors = simplify_selectors(selectors);
     let selectors = selectors.iter().map(|s| s.as_ref()).collect();
     create_value(value, selectors)
@@ -101,12 +133,8 @@ fn create_array(array: &Vec<Value>, selectors: &HashSet<&str>) -> Vec<Value> {
     res
 }
 
-fn is_complex(key: impl AsRef<str>) -> bool {
-    key.as_ref().contains(SPLIT_SYMBOL)
-}
-
 fn is_simple(key: impl AsRef<str>) -> bool {
-    !is_complex(key)
+    !key.as_ref().contains(SPLIT_SYMBOL)
 }
 
 #[cfg(test)]
@@ -114,6 +142,46 @@ mod tests {
     use big_s::S;
 
     use super::*;
+
+    #[test]
+    fn test_contained_in() {
+        assert!(contained_in("animaux", "animaux"));
+        assert!(contained_in("animaux.chien", "animaux"));
+        assert!(contained_in(
+            "animaux.chien.race.bouvier bernois.fourrure.couleur",
+            "animaux"
+        ));
+        assert!(contained_in(
+            "animaux.chien.race.bouvier bernois.fourrure.couleur",
+            "animaux.chien"
+        ));
+        assert!(contained_in(
+            "animaux.chien.race.bouvier bernois.fourrure.couleur",
+            "animaux.chien.race.bouvier bernois"
+        ));
+        assert!(contained_in(
+            "animaux.chien.race.bouvier bernois.fourrure.couleur",
+            "animaux.chien.race.bouvier bernois.fourrure"
+        ));
+        assert!(contained_in(
+            "animaux.chien.race.bouvier bernois.fourrure.couleur",
+            "animaux.chien.race.bouvier bernois.fourrure.couleur"
+        ));
+
+        // -- the wrongs
+        assert!(!contained_in("chien", "chat"));
+        assert!(!contained_in("animaux", "animaux.chien"));
+        assert!(!contained_in("animaux.chien", "animaux.chat"));
+
+        // -- the strange edge cases
+        assert!(!contained_in("animaux.chien", "anima"));
+        assert!(!contained_in("animaux.chien", "animau"));
+        assert!(!contained_in("animaux.chien", "animaux."));
+        assert!(!contained_in("animaux.chien", "animaux.c"));
+        assert!(!contained_in("animaux.chien", "animaux.ch"));
+        assert!(!contained_in("animaux.chien", "animaux.chi"));
+        assert!(!contained_in("animaux.chien", "animaux.chie"));
+    }
 
     #[test]
     fn test_simplify_selectors() {
