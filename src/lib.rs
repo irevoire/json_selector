@@ -84,7 +84,7 @@ fn create_value(value: &Document, mut selectors: HashSet<&str>) -> Document {
         let sub_selectors: HashSet<&str> = selectors
             .iter()
             .filter(|s| contained_in(s, key))
-            .map(|s| &s.trim_start_matches(key)[SPLIT_SYMBOL.len_utf8()..])
+            .filter_map(|s| s.trim_start_matches(key).get(SPLIT_SYMBOL.len_utf8()..))
             .collect();
 
         if !sub_selectors.is_empty() {
@@ -584,6 +584,44 @@ mod tests {
                         }
                     }
                 ]
+            })
+        );
+    }
+
+    #[test]
+    fn all_conflict_variation() {
+        let value: Value = json!({
+           "pet.dog.name": "jean",
+           "pet.dog": {
+             "name": "bob"
+           },
+           "pet": {
+             "dog.name": "michel"
+           },
+           "pet": {
+             "dog": {
+               "name": "milan"
+             }
+           }
+        });
+        let value: &Document = value.as_object().unwrap();
+
+        let res: Value = select_values(value, vec![S("pet.dog.name")]).into();
+        assert_eq!(
+            res,
+            json!({
+               "pet.dog.name": "jean",
+               "pet.dog": {
+                 "name": "bob"
+               },
+               "pet": {
+                 "dog.name": "michel"
+               },
+               "pet": {
+                 "dog": {
+                   "name": "milan"
+                 }
+               }
             })
         );
     }
