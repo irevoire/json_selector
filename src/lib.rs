@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde_json::*;
 
 type Document = Map<String, Value>;
@@ -24,60 +26,47 @@ fn simplify_selectors(mut selectors: Vec<String>) -> Vec<String> {
 }
 
 pub fn select_values(value: &Document, selectors: Vec<String>) -> Document {
-    let mut new_value: Document = Map::new();
-
     let selectors = simplify_selectors(selectors);
-
-    let (complex, simple) = selectors
-        .into_iter()
-        .partition::<Vec<String>, _>(|s| is_complex(s));
-
-    for selector in simple {
-        if let Some(value) = value.get(&selector) {
-            new_value.insert(selector, value.clone());
-        }
-    }
-
-    for selector in complex {
-        let complex = select_complex_value(value, &selector);
-
-        for (key, value) in complex {
-            if let Some(new_value) = new_value.get_mut(&key) {
-                merge_value(new_value, &value);
-            } else {
-                new_value.insert(key.to_string(), value.into());
-            }
-        }
-    }
-
-    new_value
+    let selectors = selectors.iter().map(|s| s.as_ref()).collect();
+    create_value(value, selectors)
 }
 
-fn select_complex_value(value: &Document, selector: &str) -> Document {
+fn create_value(value: &Document, mut selectors: HashSet<&str>) -> Document {
     let mut new_value: Document = Map::new();
 
-    // this happens if there was field containing a `.`
-    // not in an else branch because we can have both
-    if let Some(value) = value.get(selector) {
-        new_value.insert(selector.to_string(), value.clone());
-    }
+    for (key, value) in value.iter() {
+        // first we insert all the key at the root level
+        if selectors.contains(key as &str) {
+            new_value.insert(key.to_string(), value.clone());
+            // if the key was simple we can delete it and move to
+            // the next key
+            if is_simple(key) {
+                selectors.remove(key as &str);
+                continue;
+            }
+        }
 
-    for (idx, _) in selector.match_indices(SPLIT_SYMBOL) {
-        let outer_key = &selector[..idx];
-        let inner_key = &selector[idx + SPLIT_SYMBOL.len_utf8()..];
+        // we extract all the sub selectors matching the current field
+        // if there was [person.name, person.age] and if we are on the field
+        // `person`. Then we generate the following sub selectors: [name, age].
+        let sub_selectors: HashSet<&str> = selectors
+            .iter()
+            .filter(|s| contained_in(s, key))
+            .map(|s| &s.trim_start_matches(key)[SPLIT_SYMBOL.len_utf8()..])
+            .collect();
 
-        if let Some(value) = value.get(outer_key) {
+        if !sub_selectors.is_empty() {
             match value {
-                Value::Array(arr) => {
-                    let array = select_in_array(arr, inner_key);
-                    new_value.insert(outer_key.to_string(), array.into());
+                Value::Array(array) => {
+                    let array = create_array(array, &sub_selectors);
+                    if !array.is_empty() {
+                        new_value.insert(key.to_string(), array.into());
+                    }
                 }
-                Value::Object(obj) => {
-                    let value = select_complex_value(obj, inner_key);
-                    if let Some(_value) = new_value.get_mut(outer_key) {
-                        todo!();
-                    } else {
-                        new_value.insert(outer_key.to_string(), value.into());
+                Value::Object(object) => {
+                    let object = create_value(object, sub_selectors);
+                    if !object.is_empty() {
+                        new_value.insert(key.to_string(), object.into());
                     }
                 }
                 _ => (),
@@ -88,42 +77,36 @@ fn select_complex_value(value: &Document, selector: &str) -> Document {
     new_value
 }
 
-fn select_in_array(array: &[Value], selector: &str) -> Vec<Value> {
-    let mut new_values = Vec::new();
+fn create_array(array: &Vec<Value>, selectors: &HashSet<&str>) -> Vec<Value> {
+    let mut res = Vec::new();
 
     for value in array {
         match value {
-            Value::Array(arr) => {
-                let mut array = select_in_array(arr, selector);
-                new_values.append(&mut array);
+            Value::Array(array) => {
+                let array = create_array(array, selectors);
+                if !array.is_empty() {
+                    res.push(array.into());
+                }
             }
-            Value::Object(obj) => {
-                let value = select_complex_value(obj, selector);
-                if !value.is_empty() {
-                    new_values.push(value.into());
+            Value::Object(object) => {
+                let object = create_value(object, selectors.clone());
+                if !object.is_empty() {
+                    res.push(object.into());
                 }
             }
             _ => (),
         }
     }
 
-    new_values
-}
-
-fn merge_value(base: &mut Value, other: &Value) {
-    match (base, other) {
-        (Value::Array(base), Value::Array(other)) => base.append(&mut other.clone()),
-        (Value::Object(base), Value::Object(other)) => {
-            for (key, value) in other {
-                base.insert(key.to_string(), value.clone());
-            }
-        }
-        _ => panic!("unexpected"),
-    }
+    res
 }
 
 fn is_complex(key: impl AsRef<str>) -> bool {
     key.as_ref().contains(SPLIT_SYMBOL)
+}
+
+fn is_simple(key: impl AsRef<str>) -> bool {
+    !is_complex(key)
 }
 
 #[cfg(test)]
@@ -253,6 +236,8 @@ mod tests {
                 }
             })
         );
+
+        println!("RIGHT BEFORE");
 
         let res: Value = select_values(value, vec![S("race.name")]).into();
         assert_eq!(
@@ -484,12 +469,44 @@ mod tests {
         )
         .into();
 
-        println!("{}", serde_json::to_string_pretty(&res).unwrap());
+        assert_eq!(
+            res,
+            json!({
+                "doggos": [
+                    {
+                        "marc": {
+                            "age": 4,
+                            "race": {
+                                "name": "golden retriever",
+                            }
+                        }
+                    }
+                ]
+            })
+        );
+
+        let res: Value = select_values(
+            value,
+            vec![
+                S("doggos.marc.race.name"),
+                S("doggos.marc.age"),
+                S("doggos.jean.race.name"),
+                S("other.field"),
+            ],
+        )
+        .into();
 
         assert_eq!(
             res,
             json!({
                 "doggos": [
+                    {
+                        "jean": {
+                            "race": {
+                                "name": "bernese mountain",
+                            }
+                        }
+                    },
                     {
                         "marc": {
                             "age": 4,
