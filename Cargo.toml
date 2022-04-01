@@ -6,7 +6,7 @@ description = "A permissive json pointer"
 readme = "README.md"
 license = "WTFPL"
 repository = "https://github.com/irevoire/permissive-json-pointer"
-keywords = ["json", "pointer", "path", "serde_json", "permissive", "liberal"]
+keywords = ["json", "pointer", "path", "serde_json", "permissive"]
 
 [dependencies]
 serde_json = "1.0"
