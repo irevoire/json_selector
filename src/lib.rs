@@ -9,13 +9,107 @@ type Document = Map<String, Value>;
 const SPLIT_SYMBOL: char = '.';
 
 /// Returns `true` if the `subset` is contained in the `main` string.
-fn contained_in(subset: &str, main: &str) -> bool {
-    subset.starts_with(main)
-        && subset[main.len()..]
+fn contained_in(selector: &str, key: &str) -> bool {
+    selector.starts_with(key)
+        && selector[key.len()..]
             .chars()
             .next()
             .map(|c| c == SPLIT_SYMBOL)
             .unwrap_or(true)
+}
+
+/// Map the selected leaf values of a json allowing you to update only the fields that were selected.
+/// ```
+/// use serde_json::{Value, json};
+/// use permissive_json_pointer::map_leaf_values;
+///
+/// let mut value: Value = json!({
+///     "jean": {
+///         "age": 8,
+///         "race": {
+///             "name": "bernese mountain",
+///             "size": "80cm",
+///         }
+///     }
+/// });
+/// map_leaf_values(
+///     value.as_object_mut().unwrap(),
+///     ["jean.race.name"],
+///     |key, value| match (value, dbg!(key)) {
+///         (Value::String(name), "jean.race.name") => *name = "patou".to_string(),
+///         _ => unreachable!(),
+///     },
+/// );
+/// assert_eq!(
+///     value,
+///     json!({
+///         "jean": {
+///             "age": 8,
+///             "race": {
+///                 "name": "patou",
+///                 "size": "80cm",
+///             }
+///         }
+///     })
+/// );
+/// ```
+pub fn map_leaf_values<'a>(
+    value: &mut Map<String, Value>,
+    selectors: impl IntoIterator<Item = &'a str>,
+    mut mapper: impl FnMut(&str, &mut Value),
+) {
+    let selectors: Vec<_> = selectors.into_iter().collect();
+    map_leaf_values_in_object(value, &selectors, "", &mut mapper);
+}
+
+pub fn map_leaf_values_in_object<'a>(
+    value: &mut Map<String, Value>,
+    selectors: &[&'a str],
+    base_key: &str,
+    mapper: &mut impl FnMut(&str, &mut Value),
+) {
+    for (key, value) in value.iter_mut() {
+        let base_key = if base_key.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}{}{}", base_key, SPLIT_SYMBOL, key)
+        };
+
+        // here if the user only specified `doggo` we need to iterate in all the fields of `doggo`
+        // so we check the contained_in on both side
+        let should_continue = selectors.into_iter().any(|ref selector| {
+            contained_in(selector, &base_key) || contained_in(&base_key, selector)
+        });
+
+        if should_continue {
+            match value {
+                Value::Object(object) => {
+                    map_leaf_values_in_object(object, selectors, &base_key, mapper)
+                }
+                Value::Array(array) => {
+                    map_leaf_values_in_array(array, selectors, &base_key, mapper)
+                }
+                value => mapper(&base_key, value),
+            }
+        }
+    }
+}
+
+pub fn map_leaf_values_in_array(
+    values: &mut Vec<Value>,
+    selectors: &[&str],
+    base_key: &str,
+    mapper: &mut impl FnMut(&str, &mut Value),
+) {
+    for value in values.iter_mut() {
+        match value {
+            Value::Object(object) => {
+                map_leaf_values_in_object(object, selectors, &base_key, mapper)
+            }
+            Value::Array(array) => map_leaf_values_in_array(array, selectors, &base_key, mapper),
+            value => mapper(&base_key, value),
+        }
+    }
 }
 
 /// Permissively selects values in a json with a list of selectors.
@@ -35,7 +129,7 @@ fn contained_in(subset: &str, main: &str) -> bool {
 /// });
 /// let value: &Map<String, Value> = value.as_object().unwrap();
 ///
-/// let res: Value = select_values(value, vec!["name".to_string(), "race.name".to_string()]).into();
+/// let res: Value = select_values(value, vec!["name", "race.name"]).into();
 /// assert_eq!(
 ///     res,
 ///     json!({
@@ -46,8 +140,11 @@ fn contained_in(subset: &str, main: &str) -> bool {
 ///     })
 /// );
 /// ```
-pub fn select_values(value: &Map<String, Value>, selectors: Vec<String>) -> Map<String, Value> {
-    let selectors = selectors.iter().map(|s| s.as_ref()).collect();
+pub fn select_values<'a>(
+    value: &Map<String, Value>,
+    selectors: impl IntoIterator<Item = &'a str>,
+) -> Map<String, Value> {
+    let selectors = selectors.into_iter().collect();
     create_value(value, selectors)
 }
 
@@ -184,7 +281,7 @@ mod tests {
         });
         let value: &Document = value.as_object().unwrap();
 
-        let res: Value = select_values(value, vec![S("name")]).into();
+        let res: Value = select_values(value, vec!["name"]).into();
         assert_eq!(
             res,
             json!({
@@ -192,7 +289,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("age")]).into();
+        let res: Value = select_values(value, vec!["age"]).into();
         assert_eq!(
             res,
             json!({
@@ -200,7 +297,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("name"), S("age")]).into();
+        let res: Value = select_values(value, vec!["name", "age"]).into();
         assert_eq!(
             res,
             json!({
@@ -209,7 +306,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("race")]).into();
+        let res: Value = select_values(value, vec!["race"]).into();
         assert_eq!(
             res,
             json!({
@@ -221,7 +318,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("name"), S("age"), S("race")]).into();
+        let res: Value = select_values(value, vec!["name", "age", "race"]).into();
         assert_eq!(
             res,
             json!({
@@ -249,7 +346,7 @@ mod tests {
         });
         let value: &Document = value.as_object().unwrap();
 
-        let res: Value = select_values(value, vec![S("race")]).into();
+        let res: Value = select_values(value, vec!["race"]).into();
         assert_eq!(
             res,
             json!({
@@ -263,7 +360,7 @@ mod tests {
 
         println!("RIGHT BEFORE");
 
-        let res: Value = select_values(value, vec![S("race.name")]).into();
+        let res: Value = select_values(value, vec!["race.name"]).into();
         assert_eq!(
             res,
             json!({
@@ -273,7 +370,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("race.name"), S("race.size")]).into();
+        let res: Value = select_values(value, vec!["race.name", "race.size"]).into();
         assert_eq!(
             res,
             json!({
@@ -286,13 +383,7 @@ mod tests {
 
         let res: Value = select_values(
             value,
-            vec![
-                S("race.name"),
-                S("race.size"),
-                S("race.avg_age"),
-                S("race.size"),
-                S("age"),
-            ],
+            vec!["race.name", "race.size", "race.avg_age", "race.size", "age"],
         )
         .into();
         assert_eq!(
@@ -307,7 +398,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("race.name"), S("race")]).into();
+        let res: Value = select_values(value, vec!["race.name", "race"]).into();
         assert_eq!(
             res,
             json!({
@@ -319,7 +410,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("race"), S("race.name")]).into();
+        let res: Value = select_values(value, vec!["race", "race.name"]).into();
         assert_eq!(
             res,
             json!({
@@ -345,7 +436,7 @@ mod tests {
         });
         let value: &Document = value.as_object().unwrap();
 
-        let res: Value = select_values(value, vec![S("jean")]).into();
+        let res: Value = select_values(value, vec!["jean"]).into();
         assert_eq!(
             res,
             json!({
@@ -359,7 +450,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("jean.age")]).into();
+        let res: Value = select_values(value, vec!["jean.age"]).into();
         assert_eq!(
             res,
             json!({
@@ -369,7 +460,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("jean.race.size")]).into();
+        let res: Value = select_values(value, vec!["jean.race.size"]).into();
         assert_eq!(
             res,
             json!({
@@ -381,7 +472,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("jean.race.name"), S("jean.age")]).into();
+        let res: Value = select_values(value, vec!["jean.race.name", "jean.age"]).into();
         assert_eq!(
             res,
             json!({
@@ -394,7 +485,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("jean.race")]).into();
+        let res: Value = select_values(value, vec!["jean.race"]).into();
         assert_eq!(
             res,
             json!({
@@ -434,7 +525,7 @@ mod tests {
         });
         let value: &Document = value.as_object().unwrap();
 
-        let res: Value = select_values(value, vec![S("doggos.jean")]).into();
+        let res: Value = select_values(value, vec!["doggos.jean"]).into();
         assert_eq!(
             res,
             json!({
@@ -452,7 +543,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("doggos.marc")]).into();
+        let res: Value = select_values(value, vec!["doggos.marc"]).into();
         assert_eq!(
             res,
             json!({
@@ -470,7 +561,7 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(value, vec![S("doggos.marc.race")]).into();
+        let res: Value = select_values(value, vec!["doggos.marc.race"]).into();
         assert_eq!(
             res,
             json!({
@@ -487,11 +578,8 @@ mod tests {
             })
         );
 
-        let res: Value = select_values(
-            value,
-            vec![S("doggos.marc.race.name"), S("doggos.marc.age")],
-        )
-        .into();
+        let res: Value =
+            select_values(value, vec!["doggos.marc.race.name", "doggos.marc.age"]).into();
 
         assert_eq!(
             res,
@@ -512,10 +600,10 @@ mod tests {
         let res: Value = select_values(
             value,
             vec![
-                S("doggos.marc.race.name"),
-                S("doggos.marc.age"),
-                S("doggos.jean.race.name"),
-                S("other.field"),
+                "doggos.marc.race.name",
+                "doggos.marc.age",
+                "doggos.jean.race.name",
+                "other.field",
             ],
         )
         .into();
@@ -562,7 +650,7 @@ mod tests {
         });
         let value: &Document = value.as_object().unwrap();
 
-        let res: Value = select_values(value, vec![S("pet.dog.name")]).into();
+        let res: Value = select_values(value, vec!["pet.dog.name"]).into();
         assert_eq!(
             res,
             json!({
@@ -595,8 +683,7 @@ mod tests {
         });
         let value: &Document = value.as_object().unwrap();
 
-        let res: Value =
-            select_values(value, vec![S("pet.dog.name"), S("pet.dog"), S("pet")]).into();
+        let res: Value = select_values(value, vec!["pet.dog.name", "pet.dog", "pet"]).into();
 
         assert_eq!(
             res,
@@ -611,6 +698,76 @@ mod tests {
                    "name": "milan",
                  }
                }
+            })
+        );
+    }
+
+    #[test]
+    fn map_object() {
+        let mut value: Value = json!({
+            "jean": {
+                "age": 8,
+                "race": {
+                    "name": "bernese mountain",
+                    "size": "80cm",
+                }
+            }
+        });
+
+        map_leaf_values(
+            value.as_object_mut().unwrap(),
+            ["jean.race.name"],
+            |key, value| match (value, dbg!(key)) {
+                (Value::String(name), "jean.race.name") => *name = S("patou"),
+                _ => unreachable!(),
+            },
+        );
+
+        assert_eq!(
+            value,
+            json!({
+                "jean": {
+                    "age": 8,
+                    "race": {
+                        "name": "patou",
+                        "size": "80cm",
+                    }
+                }
+            })
+        );
+
+        let mut value: Value = json!({
+            "jean": {
+                "age": 8,
+                "race": {
+                    "name": "bernese mountain",
+                    "size": "80cm",
+                }
+            },
+            "bob": "lolpied",
+        });
+
+        let mut calls = 0;
+        map_leaf_values(value.as_object_mut().unwrap(), ["jean"], |key, value| {
+            calls += 1;
+            match (value, key) {
+                (Value::String(name), "jean.race.name") => *name = S("patou"),
+                _ => println!("Called with {key}"),
+            }
+        });
+
+        assert_eq!(calls, 3);
+        assert_eq!(
+            value,
+            json!({
+                "jean": {
+                    "age": 8,
+                    "race": {
+                        "name": "patou",
+                        "size": "80cm",
+                    }
+                },
+                "bob": "lolpied",
             })
         );
     }
