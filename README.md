@@ -67,8 +67,6 @@ Consider this even more crappy json;
   },
   "pet": {
     "dog.name": "michel"
-  },
-  "pet": {
     "dog": {
       "name": "milan"
     }
